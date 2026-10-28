@@ -1,0 +1,62 @@
+name: Compile Onyx baseline kernel
+on:
+  workflow_run:
+    workflows: [Validate Onyx kernel configuration]
+    types: [completed]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  compile:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential flex bison libssl-dev libelf-dev bc clang lld llvm dwarves python3 rsync
+      - name: Retrieve pinned source
+        shell: bash
+        run: |
+          set -euo pipefail
+          source source.lock
+          git init kernel
+          git -C kernel remote add origin "$KERNEL_REPOSITORY"
+          git -C kernel fetch --depth=1 origin "$KERNEL_COMMIT"
+          git -C kernel checkout --detach FETCH_HEAD
+          test "$(git -C kernel rev-parse HEAD)" = "$KERNEL_COMMIT"
+      - name: Configure and compile baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ARCH=arm64
+          mkdir -p diagnostics
+          clang --version > diagnostics/compiler.txt
+          cd kernel
+          git rev-parse HEAD > ../diagnostics/kernel-commit.txt
+          make O=out LLVM=1 konoha_defconfig
+          scripts/kconfig/merge_config.sh -m -O out out/.config ../config/nethunter.fragment
+          make O=out LLVM=1 olddefconfig
+          cp out/.config ../diagnostics/resolved.config
+          for symbol in USB_CONFIGFS_F_HID CFG80211 MAC80211 ATH9K_HTC RTL8XXXU; do
+            grep -qx "CONFIG_${symbol}=y" out/.config || exit 1
+          done
+          make -j"$(nproc)" O=out LLVM=1 Image modules 2>&1 | tee ../diagnostics/build.log
+          cp out/Module.symvers ../diagnostics/
+          cp out/System.map ../diagnostics/
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: onyx-baseline-diagnostics
+          path: diagnostics/
+          if-no-files-found: warn
+      - name: Upload experimental kernel Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: onyx-baseline-image-unvalidated
+          path: kernel/out/arch/arm64/boot/Image
+          if-no-files-found: error
