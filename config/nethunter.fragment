@@ -1,0 +1,27 @@
+# Merge with pinned upstream konoha_defconfig; verify resolved .config.
+CONFIG_USB_GADGET=y
+CONFIG_USB_CONFIGFS=y
+CONFIG_USB_CONFIGFS_F_HID=y
+CONFIG_USB_CONFIGFS_F_ACM=y
+CONFIG_USB_CONFIGFS_ACM=y
+CONFIG_USB_CONFIGFS_RNDIS=y
+CONFIG_PACKET=y
+CONFIG_WIRELESS=y
+CONFIG_WLAN=y
+CONFIG_CFG80211=y
+CONFIG_CFG80211_WEXT=y
+CONFIG_MAC80211=y
+CONFIG_RFKILL=y
+CONFIG_USB_SUPPORT=y
+CONFIG_USB=y
+CONFIG_WLAN_VENDOR_ATH=y
+CONFIG_ATH_COMMON=y
+CONFIG_ATH9K_HW=y
+CONFIG_ATH9K_COMMON=y
+CONFIG_ATH9K_HTC=y
+CONFIG_WLAN_VENDOR_REALTEK=y
+CONFIG_RTL8XXXU=y
+# ATH9K_HTC targets the WN722N v1 hardware family.
+# RTL8XXXU is a baseline for some Realtek USB devices, not a claim
+# of WN722N v2/v3 monitor/injection or Archer T2U Plus support.
+# Archer T2U Plus RTL8821AU needs an additional compatible driver.
