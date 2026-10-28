@@ -1,0 +1,51 @@
+name: Validate Onyx kernel configuration
+on:
+  push:
+    paths:
+      - config/**
+      - source.lock
+      - .github/workflows/kernel-config.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  configuration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install configuration tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential flex bison libssl-dev libelf-dev bc clang lld llvm
+      - name: Retrieve pinned kernel source
+        shell: bash
+        run: |
+          set -euo pipefail
+          source source.lock
+          git init kernel
+          git -C kernel remote add origin "$KERNEL_REPOSITORY"
+          git -C kernel fetch --depth=1 origin "$KERNEL_COMMIT"
+          git -C kernel checkout --detach FETCH_HEAD
+          test "$(git -C kernel rev-parse HEAD)" = "$KERNEL_COMMIT"
+      - name: Resolve configuration and check required features
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ARCH=arm64
+          cd kernel
+          make O=out LLVM=1 konoha_defconfig
+          scripts/kconfig/merge_config.sh -m -O out out/.config ../config/nethunter.fragment
+          make O=out LLVM=1 olddefconfig
+          mkdir -p ../diagnostics
+          cp out/.config ../diagnostics/resolved.config
+          git rev-parse HEAD > ../diagnostics/kernel-commit.txt
+          clang --version > ../diagnostics/compiler.txt
+          for symbol in USB_GADGET USB_CONFIGFS USB_CONFIGFS_F_HID CFG80211 MAC80211 ATH9K_HTC RTL8XXXU; do
+            grep -qx "CONFIG_${symbol}=y" out/.config || { echo "Required configuration missing: ${symbol}"; exit 1; }
+          done
+      - name: Upload resolved configuration
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: onyx-kernel-config-diagnostics
+          path: diagnostics/
+          if-no-files-found: warn
