@@ -32,12 +32,18 @@ jobs:
           set -euo pipefail
           export ARCH=arm64
           cd kernel
-          # Same stock KernelSU stub preparation as upstream build.sh.
-          mkdir -p drivers/kernelsu
-          touch drivers/kernelsu/Kconfig drivers/kernelsu/Makefile
+          # Integrate a pinned KernelSU Next revision, matching upstream layout.
+          git init .root_modules/KernelSU-Next
+          git -C .root_modules/KernelSU-Next remote add origin https://github.com/KernelSU-Next/KernelSU-Next.git
+          git -C .root_modules/KernelSU-Next fetch --depth=1 origin b427a3f9c2421a443f961007bfce66b25486643f
+          git -C .root_modules/KernelSU-Next checkout --detach FETCH_HEAD
+          test -f .root_modules/KernelSU-Next/kernel/Kconfig
+          ln -s ../.root_modules/KernelSU-Next/kernel drivers/kernelsu
           make O=out LLVM=1 konoha_defconfig
           scripts/kconfig/merge_config.sh -m -O out out/.config ../config/nethunter.fragment
+          scripts/config --file out/.config -e KSU -d KSU_SUSFS -d KPM
           make O=out LLVM=1 olddefconfig
+          grep -qx 'CONFIG_KSU=y' out/.config
           mkdir -p ../diagnostics
           cp out/.config ../diagnostics/resolved.config
           git rev-parse HEAD > ../diagnostics/kernel-commit.txt
