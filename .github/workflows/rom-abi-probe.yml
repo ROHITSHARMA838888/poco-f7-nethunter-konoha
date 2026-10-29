@@ -1,0 +1,51 @@
+name: ROM baseline ABI probe (no Image)
+on:
+  push:
+    branches: [codex/rom-abi-probe]
+    paths:
+      - compatibility/**
+      - .github/workflows/rom-abi-probe.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: rom-abi-probe
+  cancel-in-progress: true
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install diagnostic compiler and configuration tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential flex bison libssl-dev libelf-dev bc clang lld llvm python3
+      - name: Fetch the exact source commit embedded in the ROM kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init rom-kernel
+          git -C rom-kernel remote add origin https://github.com/xiaomi-onyx-playground/android_kernel_xiaomi_sm8735.git
+          git -C rom-kernel fetch --depth=1 origin 7750565ada3d57e195798519b005d2b038e888c1
+          git -C rom-kernel checkout --detach FETCH_HEAD
+          test "$(git -C rom-kernel rev-parse HEAD)" = 7750565ada3d57e195798519b005d2b038e888c1
+      - name: Compile only the module ABI witness
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p rom-kernel/out probe-evidence
+          gzip -dc compatibility/rom.config.gz > rom-kernel/out/.config
+          cp rom-kernel/out/.config probe-evidence/rom-original.config
+          clang --version > probe-evidence/compiler.txt
+          make -C rom-kernel O=out ARCH=arm64 LLVM=1 olddefconfig 2>&1 | tee probe-evidence/configure.log
+          cp rom-kernel/out/.config probe-evidence/resolved.config
+          python3 rom-kernel/scripts/diffconfig probe-evidence/rom-original.config probe-evidence/resolved.config > probe-evidence/config-diff.txt
+          make -C rom-kernel -j"$(nproc)" O=out ARCH=arm64 LLVM=1 kernel/module/version.o 2>&1 | tee probe-evidence/probe-build.log
+          cp rom-kernel/out/kernel/module/.version.o.cmd probe-evidence/version.o.cmd.txt
+          python3 compatibility/check_probe.py
+      - name: Retain baseline ABI evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rom-baseline-abi-probe
+          path: probe-evidence/
+          if-no-files-found: error
