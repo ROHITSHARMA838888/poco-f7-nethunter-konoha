@@ -1,4 +1,4 @@
-name: Build ROM baseline symbol table
+name: Build ROM baseline symbol table with LLVM 22
 on:
   push:
     branches: [codex/rom-symbol-baseline]
@@ -14,10 +14,23 @@ jobs:
   baseline:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    env:
+      ROM_PROBE_TOOLCHAIN_SCOPE: Official apt LLVM 22 baseline, not exact ROM Android Clang r596125
     steps:
       - uses: actions/checkout@v4
-      - name: Install compiler and matching BTF tools
-        run: sudo apt-get update && sudo apt-get install -y build-essential flex bison libssl-dev libelf-dev bc clang lld llvm python3 dwarves rsync
+      - name: Install official LLVM 22 and matching BTF tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates curl gnupg build-essential flex bison libssl-dev libelf-dev bc dwarves python3
+          curl -fsSLo /tmp/llvm-signing-key.asc https://apt.llvm.org/llvm-snapshot.gpg.key
+          fingerprint=$(gpg --show-keys --with-colons /tmp/llvm-signing-key.asc | awk -F: '$1 == "fpr" {print $10; exit}')
+          test "$fingerprint" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+          gpg --dearmor < /tmp/llvm-signing-key.asc | sudo tee /usr/share/keyrings/llvm22.gpg > /dev/null
+          echo 'deb [signed-by=/usr/share/keyrings/llvm22.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main' | sudo tee /etc/apt/sources.list.d/llvm22.list
+          sudo apt-get update
+          sudo apt-get install -y clang-22 lld-22 llvm-22
       - name: Fetch exact ROM kernel source
         shell: bash
         run: |
@@ -34,23 +47,23 @@ jobs:
           mkdir -p rom-kernel/out probe-evidence
           gzip -dc compatibility/rom.config.gz > rom-kernel/out/.config
           cp rom-kernel/out/.config probe-evidence/rom-original.config
-          clang --version > probe-evidence/compiler.txt
+          clang-22 --version > probe-evidence/compiler.txt
           pahole --version > probe-evidence/pahole.txt
           git -C rom-kernel rev-parse HEAD > probe-evidence/source-commit.txt
-          make -C rom-kernel O=out ARCH=arm64 LLVM=1 olddefconfig 2>&1 | tee probe-evidence/configure.log
+          make -C rom-kernel O=out ARCH=arm64 LLVM=-22 olddefconfig 2>&1 | tee probe-evidence/configure.log
           cp rom-kernel/out/.config probe-evidence/resolved.config
           python3 rom-kernel/scripts/diffconfig probe-evidence/rom-original.config probe-evidence/resolved.config > probe-evidence/config-diff.txt
-          for symbol in DEBUG_INFO_BTF DEBUG_INFO_BTF_MODULES KASAN_HW_TAGS ARM64_4K_PAGES MODULES MODVERSIONS; do
+          for symbol in DEBUG_INFO_BTF DEBUG_INFO_BTF_MODULES KASAN_HW_TAGS ARM64_4K_PAGES MODULES MODVERSIONS CC_HAS_COUNTED_BY; do
             grep -qx "CONFIG_${symbol}=y" rom-kernel/out/.config || { echo "Required ROM ABI setting lost: $symbol"; exit 1; }
           done
-          make -C rom-kernel -j"$(nproc)" O=out ARCH=arm64 LLVM=1 kernel/module/version.o 2>&1 | tee probe-evidence/probe-build.log
+          make -C rom-kernel -j"$(nproc)" O=out ARCH=arm64 LLVM=-22 kernel/module/version.o 2>&1 | tee probe-evidence/probe-build.log
           cp rom-kernel/out/kernel/module/.version.o.cmd probe-evidence/version.o.cmd.txt
           python3 compatibility/check_probe.py
       - name: Compile baseline and exported symbol CRCs
         shell: bash
         run: |
           set -euo pipefail
-          make -C rom-kernel -j"$(nproc)" O=out ARCH=arm64 LLVM=1 vmlinux modules 2>&1 | tee probe-evidence/baseline-build.log
+          make -C rom-kernel -j"$(nproc)" O=out ARCH=arm64 LLVM=-22 vmlinux modules 2>&1 | tee probe-evidence/baseline-build.log
           test -s rom-kernel/out/Module.symvers
           cp rom-kernel/out/Module.symvers probe-evidence/
       - name: Retain baseline ABI evidence
