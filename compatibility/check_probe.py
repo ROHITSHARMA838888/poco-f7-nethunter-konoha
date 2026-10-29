@@ -1,6 +1,6 @@
 """Report the ROM baseline ABI probe without changing any CRC values."""
 from pathlib import Path
-import json,re
+import json,re,os
 root=Path('probe-evidence')
 root.mkdir(exist_ok=True)
 cmd=Path('rom-kernel/out/kernel/module/.version.o.cmd').read_text()
@@ -12,7 +12,8 @@ expected=0x4e276f37
 report={'source_commit':'7750565ada3d57e195798519b005d2b038e888c1',
         'expected_module_layout':hex(expected),'actual_module_layout':hex(actual),
         'match':actual==expected,
-        'toolchain_scope':'System Clang 18 diagnostic probe, not a reproduction of ROM Android Clang 22',
+        'toolchain_scope':os.environ.get('ROM_PROBE_TOOLCHAIN_SCOPE',
+            'System Clang 18 diagnostic probe, not a reproduction of ROM Android Clang 22'),
         'limits':['One symbol only; matching it is necessary but not sufficient for ROM compatibility',
                   'No kernel Image, root changes, installer or runtime test produced by this probe']}
 (root/'abi-probe.json').write_text(json.dumps(report,indent=2)+'\n')
