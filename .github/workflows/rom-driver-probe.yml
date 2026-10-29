@@ -89,7 +89,7 @@ jobs:
           make -C rom-kernel -j"$(nproc)" O=out ARCH=arm64 LLVM=-22 kernel/module/version.o 2>&1 | tee probe-evidence/probe-build.log
           cp rom-kernel/out/kernel/module/.version.o.cmd probe-evidence/version.o.cmd.txt
           python3 compatibility/check_probe.py
-      - name: Build both drivers with normal FORTIFY and Werror
+      - name: Preflight receive object then build both strict drivers
         shell: bash
         run: |
           set -euo pipefail

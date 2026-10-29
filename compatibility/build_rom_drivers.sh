@@ -19,11 +19,16 @@ for driver in rtl8812au rtl8188eus; do
   python3 compatibility/prepare_rom_driver.py "external/$driver"
   git -C "external/$driver" diff --check
   git -C "external/$driver" diff > "probe-evidence/$driver-source-fixes.patch"
-  if ! make -k -j"$(nproc)" -C rom-kernel O=out ARCH=arm64 LLVM=-22 \
-      M="$GITHUB_WORKSPACE/external/$driver" \
-      CONFIG_88XXAU=m CONFIG_RTL8188EU=m CONFIG_PLATFORM_I386_PC=n \
-      USER_EXTRA_CFLAGS="-DCONFIG_LITTLE_ENDIAN -DCONFIG_IOCTL_CFG80211 -DRTW_USE_CFG80211_STA_EVENT" \
-      modules 2>&1 | tee "probe-evidence/$driver-build.log"; then
+  build=(make -k -j"$(nproc)" -C rom-kernel O=out ARCH=arm64 LLVM=-22
+      M="$GITHUB_WORKSPACE/external/$driver"
+      CONFIG_88XXAU=m CONFIG_RTL8188EU=m CONFIG_PLATFORM_I386_PC=n
+      USER_EXTRA_CFLAGS="-DCONFIG_LITTLE_ENDIAN -DCONFIG_IOCTL_CFG80211 -DRTW_USE_CFG80211_STA_EVENT")
+  if [ "$driver" = rtl8812au ]; then
+    if ! "${build[@]}" core/rtw_recv.o 2>&1 | tee probe-evidence/rtl8812au-recv-preflight.log; then
+      exit 1
+    fi
+  fi
+  if ! "${build[@]}" modules 2>&1 | tee "probe-evidence/$driver-build.log"; then
     failed=1
     continue
   fi

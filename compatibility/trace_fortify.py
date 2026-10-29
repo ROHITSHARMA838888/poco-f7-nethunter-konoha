@@ -26,7 +26,7 @@ for index, line in enumerate(lines):
         function = line[:240]
     if 'call ' not in line or '@__write_overflow_field(' not in line:
         continue
-    output += [function, *lines[max(0, index-3):index+3]]
+    output += [function, *lines[max(0, index-35):index+8]]
     pending = re.findall(r'!dbg (!\d+)', line)
     seen = set()
     while pending and len(seen) < 30:

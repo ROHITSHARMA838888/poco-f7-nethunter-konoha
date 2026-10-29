@@ -12,10 +12,8 @@ if root.name == 'rtl8812au':
     start = text.index('sint fill_radiotap_hdr(')
     end = text.index('\n#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 24))', start)
     function = text[start:end]
-    # The 64-byte radiotap buffer accommodates up to four RF paths.
-    # An unchecked u8 path count permits the extended-present loop to
-    # pass byte64; Clang22 flags this loop at original line4011.
-    # Snapshot the count once so later aliasing cannot invalidate the bound.
+    # Snapshot and validate the hardware path count before serializing
+    # presence words or indexing the four-entry per-path PHY array.
     assert function.count('pHalData->NumTotalRFPath') == 4
     function = function.replace('pHalData->NumTotalRFPath', 'rf_paths')
     declaration = '\tu32 tmp_32bit;\n\tint i;'
@@ -24,22 +22,28 @@ if root.name == 'rtl8812au':
         '\tu8 rf_paths = pHalData->NumTotalRFPath;\n\n'
         '\tif (rf_paths > ARRAY_SIZE(pattrib->phy_info.rx_pwr))\n'
         '\t\treturn _FAIL;')
-    # Keep the fixed typed header distinct from the larger byte buffer.
-    # Casting hdr_buf to the eight-byte radiotap struct lets object-size
-    # analysis narrow subsequent writes through that aliased storage.
-    # Compose the same eight header bytes only after all optional fields.
-    old = '\tstruct ieee80211_radiotap_header *rtap_hdr = NULL;'
-    assert function.count(old) == 1
-    function = function.replace(old,
-        '\tstruct ieee80211_radiotap_header rtap_fixed = {0};\n'
-        '\tstruct ieee80211_radiotap_header *rtap_hdr = &rtap_fixed;')
-    old = '\trtap_hdr = (struct ieee80211_radiotap_header *)&hdr_buf[0];\n'
-    assert function.count(old) == 1
-    function = function.replace(old, '')
-    old = '\t\tmemcpy(ptr, rtap_hdr, rt_len);'
-    assert function.count(old) == 1
-    function = function.replace(old,
-        '\t\tmemcpy(hdr_buf, rtap_hdr, sizeof(*rtap_hdr));\n'
-        '\t\tmemcpy(ptr, hdr_buf, rt_len);')
+    # Serialize at most four words at fixed bounded offsets. Mutating
+    # rt_len inside the variable-bound loop leaves Clang22's FORTIFY
+    # object-size analysis with an overflowing loop path even after the
+    # count guard. The new loop preserves every valid wire bitmap.
+    first = function.index('\tif(rf_paths>0 && pattrib->physt) {')
+    last = function.index('\n#ifdef CONFIG_RTL8814A', first)
+    function = function[:first] + '''\tif (rf_paths > 0 && pattrib->physt) {
+\t\trtap_hdr->it_present |= (1 << IEEE80211_RADIOTAP_EXT) |
+\t\t\t(1 << IEEE80211_RADIOTAP_RADIOTAP_NAMESPACE);
+\t\tfor (i = 0; i < ARRAY_SIZE(pattrib->phy_info.rx_pwr); i++) {
+\t\t\tif (i >= rf_paths)
+\t\t\t\tbreak;
+\t\t\ttmp_32bit = (1 << IEEE80211_RADIOTAP_ANTENNA) |
+\t\t\t\t(1 << IEEE80211_RADIOTAP_DBM_ANTSIGNAL);
+\t\t\tif (i + 1 < rf_paths)
+\t\t\t\ttmp_32bit |= (1 << IEEE80211_RADIOTAP_EXT) |
+\t\t\t\t\t(1 << IEEE80211_RADIOTAP_RADIOTAP_NAMESPACE);
+\t\t\tmemcpy(&hdr_buf[sizeof(*rtap_hdr) + i * sizeof(tmp_32bit)],
+\t\t\t       &tmp_32bit, sizeof(tmp_32bit));
+\t\t}
+\t\trt_len += rf_paths * sizeof(tmp_32bit);
+\t}
+''' + function[last:]
     path.write_text(text[:start] + function + text[end:])
-    print('Bound radiotap RF paths and separated fixed header storage; FORTIFY remains enabled')
+    print('Bound radiotap path count and serialized presence words at fixed offsets; FORTIFY remains enabled')
