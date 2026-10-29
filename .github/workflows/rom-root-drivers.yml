@@ -97,9 +97,39 @@ jobs:
             modinfo rom-kernel/out/drivers/net/wireless/ath/ath9k/ath9k_htc.ko
             sha256sum rom-kernel/out/arch/arm64/boot/Image
           } 2>&1 | tee probe-evidence/root-image-verification.log
+      - name: Preserve successfully built kernel and Atheros modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir kernel-test-files
+          for file in \
+            rom-kernel/out/arch/arm64/boot/Image \
+            rom-kernel/out/drivers/net/wireless/ath/ath.ko \
+            rom-kernel/out/drivers/net/wireless/ath/ath9k/ath9k_hw.ko \
+            rom-kernel/out/drivers/net/wireless/ath/ath9k/ath9k_common.ko \
+            rom-kernel/out/drivers/net/wireless/ath/ath9k/ath9k_htc.ko; do
+            test -s "$file"
+            cp "$file" kernel-test-files/
+          done
+          (cd kernel-test-files && sha256sum Image *.ko > SHA256SUMS)
+          printf '%s\n' 'COMPILED KERNEL AND ATHEROS MODULES: NOT A FLASHABLE INSTALLER' \
+            'External Realtek drivers are separate. Phone boot/root/HID/Wi-Fi remain untested.' > kernel-test-files/README.txt
+      - name: Upload kernel before external driver compilation
+        uses: actions/upload-artifact@v4
+        with:
+          name: onyx-root-kernel-files-NOT-FLASHABLE
+          path: kernel-test-files/
+          if-no-files-found: error
       - name: Compile pinned external Realtek drivers
         shell: bash
         run: bash compatibility/build_rom_drivers.sh
+      - name: Retain individually verified external drivers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: onyx-individually-verified-driver-files
+          path: verified-driver-files/
+          if-no-files-found: ignore
       - name: Retain baseline ABI evidence
         if: always()
         uses: actions/upload-artifact@v4
