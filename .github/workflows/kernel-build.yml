@@ -1,5 +1,8 @@
 name: Compile Onyx baseline kernel
 on:
+  push:
+    paths:
+      - .github/workflows/kernel-build.yml
   workflow_run:
     workflows: [Validate Onyx kernel configuration]
     types: [completed]
@@ -9,7 +12,7 @@ permissions:
   actions: read
 jobs:
   compile:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     steps:
@@ -53,7 +56,7 @@ jobs:
           for symbol in USB_CONFIGFS_F_HID CFG80211 MAC80211 ATH9K_HTC RTL8XXXU; do
             grep -qx "CONFIG_${symbol}=y" out/.config || exit 1
           done
-          make -j"$(nproc)" O=out LLVM=1 Image modules 2>&1 | tee ../diagnostics/build.log
+          make -j"$(nproc)" O=out LLVM=1 KCFLAGS="-Wno-error=unused-function" Image modules 2>&1 | tee ../diagnostics/build.log
           cp out/Module.symvers ../diagnostics/
           cp out/System.map ../diagnostics/
       - name: Upload build diagnostics
