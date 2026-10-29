@@ -97,8 +97,13 @@ jobs:
             git -C "external/$driver" fetch --depth=1 origin "$revision"
             git -C "external/$driver" checkout --detach FETCH_HEAD
             test "$(git -C "external/$driver" rev-parse HEAD)" = "$revision"
-            if make -j"$(nproc)" -C kernel O=out ARCH=arm64 LLVM=1 M="$GITHUB_WORKSPACE/external/$driver" CONFIG_PLATFORM_I386_PC=n USER_EXTRA_CFLAGS="-DCONFIG_LITTLE_ENDIAN -DCONFIG_IOCTL_CFG80211 -DRTW_USE_CFG80211_STA_EVENT" modules 2>&1 | tee "diagnostics/$driver.log"; then
-              find "external/$driver" -name '*.ko' -exec cp -t wireless-modules/ {} +
+            if make -j"$(nproc)" -C kernel O=out ARCH=arm64 LLVM=1 M="$GITHUB_WORKSPACE/external/$driver" CONFIG_88XXAU=m CONFIG_RTL8188EU=m CONFIG_PLATFORM_I386_PC=n USER_EXTRA_CFLAGS="-DCONFIG_LITTLE_ENDIAN -DCONFIG_IOCTL_CFG80211 -DRTW_USE_CFG80211_STA_EVENT" modules 2>&1 | tee "diagnostics/$driver.log"; then
+              if ! find "external/$driver" -name '*.ko' -print -quit | grep -q .; then
+                echo "No kernel module produced for $driver"
+                failed=1
+              else
+                find "external/$driver" -name '*.ko' -exec cp -t wireless-modules/ {} +
+              fi
             else
               failed=1
             fi
