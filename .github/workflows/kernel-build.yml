@@ -3,6 +3,7 @@ on:
   push:
     paths:
       - .github/workflows/kernel-build.yml
+      - scripts/**
   workflow_run:
     workflows: [Validate Onyx kernel configuration]
     types: [completed]
@@ -38,7 +39,9 @@ jobs:
           export ARCH=arm64
           mkdir -p diagnostics
           clang --version > diagnostics/compiler.txt
+          python3 scripts/prepare-source.py
           cd kernel
+          git diff > ../diagnostics/source-fixes.patch
           git rev-parse HEAD > ../diagnostics/kernel-commit.txt
           # Integrate a pinned KernelSU Next revision, matching upstream layout.
           git init .root_modules/KernelSU-Next
