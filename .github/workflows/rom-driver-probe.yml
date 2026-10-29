@@ -96,7 +96,14 @@ jobs:
           make -C rom-kernel -j"$(nproc)" O=out ARCH=arm64 LLVM=-22 modules_prepare 2>&1 | tee probe-evidence/headers-prepare.log
           cp inherited-evidence/Module.symvers rom-kernel/out/Module.symvers
           cp inherited-evidence/Module.symvers probe-evidence/Module.symvers
-          bash compatibility/build_rom_drivers.sh
+          if ! bash compatibility/build_rom_drivers.sh; then
+            if [ -d external/rtl8812au/core ]; then
+              make -C rom-kernel -j"$(nproc)" O=out ARCH=arm64 LLVM=-22 M="$GITHUB_WORKSPACE/external/rtl8812au" CONFIG_88XXAU=m CONFIG_RTL8188EU=m CONFIG_PLATFORM_I386_PC=n USER_EXTRA_CFLAGS="-DCONFIG_LITTLE_ENDIAN -DCONFIG_IOCTL_CFG80211 -DRTW_USE_CFG80211_STA_EVENT" KCFLAGS="-Wno-error=attribute-warning" core/rtw_recv.o 2>&1 | tee probe-evidence/failure-diagnostic-compile.log || true
+              python3 compatibility/trace_fortify.py 2>&1 | tee probe-evidence/failure-ir-trace.log || true
+              rm -f probe-evidence/rtw_recv.ll
+            fi
+            exit 1
+          fi
       - name: Retain strict driver validation evidence
         if: always()
         uses: actions/upload-artifact@v4
