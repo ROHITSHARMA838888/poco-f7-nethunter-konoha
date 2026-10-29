@@ -1,0 +1,8 @@
+# Candidate sources; not yet compiled or runtime validated.
+RTL8812AU_REPOSITORY=https://github.com/aircrack-ng/rtl8812au.git
+RTL8812AU_COMMIT=734485506a30d6237c2deaad666a19f8ca5379f2
+RTL8188EUS_REPOSITORY=https://github.com/aircrack-ng/rtl8188eus.git
+RTL8188EUS_COMMIT=af3bf004458f76b7aec33e9ba552cd382ed1f5c3
+# rtl8812au enables RTL8821A in its Makefile; adapter USB ID still needs confirmation.
+# rtl8188eus is a candidate for WN722N Realtek revisions; ATH9K_HTC covers the Atheros family.
+# These are external module candidates and require matching kernel config, symbols, and firmware.
