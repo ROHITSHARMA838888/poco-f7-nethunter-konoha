@@ -24,7 +24,7 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y build-essential flex bison libssl-dev libelf-dev bc clang lld llvm dwarves python3 rsync
+        run: sudo apt-get update && sudo apt-get install -y build-essential flex bison libssl-dev libelf-dev bc clang lld llvm dwarves python3 rsync kmod
       - name: Retrieve pinned source
         shell: bash
         run: |
@@ -42,6 +42,8 @@ jobs:
           path: kernel/out
           key: onyx-clang18-v1-${{ hashFiles('source.lock', 'config/**', 'scripts/prepare-source.py') }}
       - name: Configure and compile baseline
+        env:
+          KERNEL_CACHE_HIT: ${{ steps.kernel-cache.outputs.cache-hit }}
         shell: bash
         run: |
           set -euo pipefail
@@ -59,17 +61,29 @@ jobs:
           git -C .root_modules/KernelSU-Next checkout --detach FETCH_HEAD
           test -f .root_modules/KernelSU-Next/kernel/Kconfig
           ln -s ../.root_modules/KernelSU-Next/kernel drivers/kernelsu
-          make O=out LLVM=1 konoha_defconfig
-          scripts/kconfig/merge_config.sh -m -O out out/.config ../config/nethunter.fragment
-          scripts/config --file out/.config -e KSU -d KSU_SUSFS -d KPM
-          make O=out LLVM=1 olddefconfig
-          grep -qx 'CONFIG_KSU=y' out/.config
-          cp out/.config ../diagnostics/resolved.config
-          for symbol in USB_CONFIGFS_F_HID CFG80211 MAC80211 ATH9K_HTC RTL8XXXU; do
-            grep -qx "CONFIG_${symbol}=y" out/.config || exit 1
-          done
-          make -j"$(nproc)" O=out LLVM=1 KCFLAGS="-Wno-error=unused-function -Wno-error=unused-variable" kernel/module/main.o lib/lz4/lz4hc.o net/ipv6/exthdrs.o net/ipv6/ioam6.o 2>&1 | tee ../diagnostics/preflight.log
-          make -j"$(nproc)" O=out LLVM=1 KCFLAGS="-Wno-error=unused-function -Wno-error=unused-variable" Image modules 2>&1 | tee ../diagnostics/build.log
+          if [ "$KERNEL_CACHE_HIT" != "true" ]; then
+            make O=out LLVM=1 konoha_defconfig
+            scripts/kconfig/merge_config.sh -m -O out out/.config ../config/nethunter.fragment
+            scripts/config --file out/.config -e KSU -d KSU_SUSFS -d KPM
+            make O=out LLVM=1 olddefconfig
+            grep -qx 'CONFIG_KSU=y' out/.config
+            cp out/.config ../diagnostics/resolved.config
+            for symbol in USB_CONFIGFS_F_HID CFG80211 MAC80211 ATH9K_HTC RTL8XXXU; do
+              grep -qx "CONFIG_${symbol}=y" out/.config || exit 1
+            done
+            make -j"$(nproc)" O=out LLVM=1 KCFLAGS="-Wno-error=unused-function -Wno-error=unused-variable" kernel/module/main.o lib/lz4/lz4hc.o net/ipv6/exthdrs.o net/ipv6/ioam6.o 2>&1 | tee ../diagnostics/preflight.log
+            make -j"$(nproc)" O=out LLVM=1 KCFLAGS="-Wno-error=unused-function -Wno-error=unused-variable" Image modules 2>&1 | tee ../diagnostics/build.log
+          else
+            test -s out/arch/arm64/boot/Image
+            test -s out/Module.symvers
+            test -s out/include/config/kernel.release
+            grep -qx 'CONFIG_KSU=y' out/.config
+            for symbol in USB_CONFIGFS_F_HID CFG80211 MAC80211 ATH9K_HTC RTL8XXXU; do
+              grep -qx "CONFIG_${symbol}=y" out/.config || exit 1
+            done
+            cp out/.config ../diagnostics/resolved.config
+            echo 'Reusing successfully compiled kernel output from matching cache key.' > ../diagnostics/build.log
+          fi
           cp out/Module.symvers ../diagnostics/
           cp out/System.map ../diagnostics/
       - name: Upload build diagnostics
@@ -93,36 +107,7 @@ jobs:
           key: ${{ steps.kernel-cache.outputs.cache-primary-key }}
       - name: Compile pinned external Realtek drivers
         shell: bash
-        run: |
-          set -euo pipefail
-          source drivers.lock
-          mkdir -p external wireless-modules
-          failed=0
-          for driver in rtl8812au rtl8188eus; do
-            if [ "$driver" = rtl8812au ]; then
-              remote="$RTL8812AU_REPOSITORY"; revision="$RTL8812AU_COMMIT"
-            else
-              remote="$RTL8188EUS_REPOSITORY"; revision="$RTL8188EUS_COMMIT"
-            fi
-            git init "external/$driver"
-            git -C "external/$driver" remote add origin "$remote"
-            git -C "external/$driver" fetch --depth=1 origin "$revision"
-            git -C "external/$driver" checkout --detach FETCH_HEAD
-            test "$(git -C "external/$driver" rev-parse HEAD)" = "$revision"
-            python3 scripts/prepare-driver.py "external/$driver"
-            git -C "external/$driver" diff > "diagnostics/$driver-source-fixes.patch"
-            if make -j"$(nproc)" -C kernel O=out ARCH=arm64 LLVM=1 M="$GITHUB_WORKSPACE/external/$driver" CONFIG_88XXAU=m CONFIG_RTL8188EU=m CONFIG_PLATFORM_I386_PC=n USER_EXTRA_CFLAGS="-DCONFIG_LITTLE_ENDIAN -DCONFIG_IOCTL_CFG80211 -DRTW_USE_CFG80211_STA_EVENT" modules 2>&1 | tee "diagnostics/$driver.log"; then
-              if ! find "external/$driver" -name '*.ko' -print -quit | grep -q .; then
-                echo "No kernel module produced for $driver"
-                failed=1
-              else
-                find "external/$driver" -name '*.ko' -exec cp -t wireless-modules/ {} +
-              fi
-            else
-              failed=1
-            fi
-          done
-          exit "$failed"
+        run: bash scripts/compile-drivers.sh
       - name: Upload external driver diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -131,5 +116,6 @@ jobs:
           path: |
             diagnostics/rtl*.log
             diagnostics/rtl*-source-fixes.patch
+            diagnostics/*.modinfo.txt
             wireless-modules/*.ko
           if-no-files-found: warn
