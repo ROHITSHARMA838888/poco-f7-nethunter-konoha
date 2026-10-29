@@ -59,7 +59,7 @@ jobs:
           for symbol in USB_CONFIGFS_F_HID CFG80211 MAC80211 ATH9K_HTC RTL8XXXU; do
             grep -qx "CONFIG_${symbol}=y" out/.config || exit 1
           done
-          make -j"$(nproc)" O=out LLVM=1 KCFLAGS="-Wno-error=unused-function" Image modules 2>&1 | tee ../diagnostics/build.log
+          make -j"$(nproc)" O=out LLVM=1 KCFLAGS="-Wno-error=unused-function -Wno-error=unused-variable" Image modules 2>&1 | tee ../diagnostics/build.log
           cp out/Module.symvers ../diagnostics/
           cp out/System.map ../diagnostics/
       - name: Upload build diagnostics
