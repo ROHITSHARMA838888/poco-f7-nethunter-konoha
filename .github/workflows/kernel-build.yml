@@ -79,3 +79,37 @@ jobs:
           name: onyx-baseline-image-unvalidated
           path: kernel/out/arch/arm64/boot/Image
           if-no-files-found: error
+      - name: Compile pinned external Realtek drivers
+        shell: bash
+        run: |
+          set -euo pipefail
+          source drivers.lock
+          mkdir -p external wireless-modules
+          failed=0
+          for driver in rtl8812au rtl8188eus; do
+            if [ "$driver" = rtl8812au ]; then
+              remote="$RTL8812AU_REPOSITORY"; revision="$RTL8812AU_COMMIT"
+            else
+              remote="$RTL8188EUS_REPOSITORY"; revision="$RTL8188EUS_COMMIT"
+            fi
+            git init "external/$driver"
+            git -C "external/$driver" remote add origin "$remote"
+            git -C "external/$driver" fetch --depth=1 origin "$revision"
+            git -C "external/$driver" checkout --detach FETCH_HEAD
+            test "$(git -C "external/$driver" rev-parse HEAD)" = "$revision"
+            if make -j"$(nproc)" -C kernel O=out ARCH=arm64 LLVM=1 M="$GITHUB_WORKSPACE/external/$driver" CONFIG_PLATFORM_I386_PC=n USER_EXTRA_CFLAGS="-DCONFIG_LITTLE_ENDIAN -DCONFIG_IOCTL_CFG80211 -DRTW_USE_CFG80211_STA_EVENT" modules 2>&1 | tee "diagnostics/$driver.log"; then
+              find "external/$driver" -name '*.ko' -exec cp {} wireless-modules/ \;
+            else
+              failed=1
+            fi
+          done
+          exit "$failed"
+      - name: Upload external driver diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: onyx-external-wifi-diagnostics
+          path: |
+            diagnostics/rtl*.log
+            wireless-modules/*.ko
+          if-no-files-found: warn
