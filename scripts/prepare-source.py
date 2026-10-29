@@ -21,3 +21,12 @@ assert '#define MIN(a,b)' in s and '#define MAX(a,b)' in s
 s = re.sub(r'\bMIN\b', 'LZ4HC_MIN', s)
 s = re.sub(r'\bMAX\b', 'LZ4HC_MAX', s)
 p.write_text(s)
+
+# Shared IPv6 IOAM helper exists in ioam6.c but lacks its header declaration.
+p = Path('kernel/include/net/ioam6.h')
+s = p.read_text()
+anchor = 'int ioam6_init(void);'
+assert s.count(anchor) == 1
+assert 'ioam6_trace_compute_nodelen' not in s
+s = s.replace(anchor, 'u8 ioam6_trace_compute_nodelen(u32 trace_type);\n\n' + anchor)
+p.write_text(s)
