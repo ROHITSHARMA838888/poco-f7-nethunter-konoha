@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install diagnostic compiler and configuration tools
-        run: sudo apt-get update && sudo apt-get install -y build-essential flex bison libssl-dev libelf-dev bc clang lld llvm python3
+        run: sudo apt-get update && sudo apt-get install -y build-essential flex bison libssl-dev libelf-dev bc clang lld llvm python3 dwarves
       - name: Fetch the exact source commit embedded in the ROM kernel
         shell: bash
         run: |
@@ -36,8 +36,12 @@ jobs:
           gzip -dc compatibility/rom.config.gz > rom-kernel/out/.config
           cp rom-kernel/out/.config probe-evidence/rom-original.config
           clang --version > probe-evidence/compiler.txt
+          pahole --version > probe-evidence/pahole.txt
           make -C rom-kernel O=out ARCH=arm64 LLVM=1 olddefconfig 2>&1 | tee probe-evidence/configure.log
           cp rom-kernel/out/.config probe-evidence/resolved.config
+          for symbol in DEBUG_INFO_BTF DEBUG_INFO_BTF_MODULES KASAN_HW_TAGS ARM64_4K_PAGES MODULES MODVERSIONS; do
+            grep -qx "CONFIG_${symbol}=y" rom-kernel/out/.config || { echo "Required ROM ABI setting lost: $symbol"; exit 1; }
+          done
           python3 rom-kernel/scripts/diffconfig probe-evidence/rom-original.config probe-evidence/resolved.config > probe-evidence/config-diff.txt
           make -C rom-kernel -j"$(nproc)" O=out ARCH=arm64 LLVM=1 kernel/module/version.o 2>&1 | tee probe-evidence/probe-build.log
           cp rom-kernel/out/kernel/module/.version.o.cmd probe-evidence/version.o.cmd.txt
