@@ -65,6 +65,10 @@ if root.name == 'rtl8812au':
         '\t\t\t\trtw_free_xmitframe(pxmitpriv, pmgntframe);\n'
         '\t\t\t\tgoto exit;\n'
         '\t\t\t}')
+    # After the null-return guard the assignment must execute unconditionally.
+    guarded = '\t\t\tif (psta != NULL) {'
+    assert function.count(guarded) == 1
+    function = function.replace(guarded, '\t\t\t{')
     mlme.write_text(text[:start] + function + text[end:])
     # Fall back to the current valid operating channel if no union is found.
     replace_once(mlme, 'u8 back_ch, back_bw, back_ch_offset;',
@@ -102,4 +106,13 @@ elif root.name == 'rtl8188eus':
                  'power_offset >= -16 && power_offset <= 15')
     replace_once(phy, 'power_offset > -8 || power_offset < 7',
                  'power_offset >= -8 && power_offset <= 7')
-
+    # Android 6.6 namespaces the VFS helpers used by this vendor driver.
+    # Use the same versioned import form already present in rtl8812au.
+    replace_once(root / 'os_dep/linux/usb_intf.c',
+        '#include <platform_ops.h>',
+        '#include <platform_ops.h>\n\n'
+        '#if defined(MODULE_IMPORT_NS) && LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)\n'
+        'MODULE_IMPORT_NS("VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver");\n'
+        '#elif defined(MODULE_IMPORT_NS) && LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)\n'
+        'MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);\n'
+        '#endif')
