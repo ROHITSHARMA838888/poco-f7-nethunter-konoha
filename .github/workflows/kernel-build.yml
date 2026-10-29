@@ -35,6 +35,11 @@ jobs:
           git -C kernel fetch --depth=1 origin "$KERNEL_COMMIT"
           git -C kernel checkout --detach FETCH_HEAD
           test "$(git -C kernel rev-parse HEAD)" = "$KERNEL_COMMIT"
+      - name: Cache kernel compilation output
+        uses: actions/cache@v4
+        with:
+          path: kernel/out
+          key: onyx-clang18-v1-${{ hashFiles('source.lock', 'config/**', 'scripts/prepare-source.py') }}
       - name: Configure and compile baseline
         shell: bash
         run: |
@@ -97,6 +102,8 @@ jobs:
             git -C "external/$driver" fetch --depth=1 origin "$revision"
             git -C "external/$driver" checkout --detach FETCH_HEAD
             test "$(git -C "external/$driver" rev-parse HEAD)" = "$revision"
+            python3 scripts/prepare-driver.py "external/$driver"
+            git -C "external/$driver" diff > "diagnostics/$driver-source-fixes.patch"
             if make -j"$(nproc)" -C kernel O=out ARCH=arm64 LLVM=1 M="$GITHUB_WORKSPACE/external/$driver" CONFIG_88XXAU=m CONFIG_RTL8188EU=m CONFIG_PLATFORM_I386_PC=n USER_EXTRA_CFLAGS="-DCONFIG_LITTLE_ENDIAN -DCONFIG_IOCTL_CFG80211 -DRTW_USE_CFG80211_STA_EVENT" modules 2>&1 | tee "diagnostics/$driver.log"; then
               if ! find "external/$driver" -name '*.ko' -print -quit | grep -q .; then
                 echo "No kernel module produced for $driver"
@@ -116,5 +123,6 @@ jobs:
           name: onyx-external-wifi-diagnostics
           path: |
             diagnostics/rtl*.log
+            diagnostics/rtl*-source-fixes.patch
             wireless-modules/*.ko
           if-no-files-found: warn
