@@ -1,4 +1,4 @@
-name: Diagnose rtl8812au FORTIFY call site
+name: Validate Realtek drivers against ROM headers
 on:
   push:
     branches: [codex/rom-symbol-baseline]
@@ -89,27 +89,31 @@ jobs:
           make -C rom-kernel -j"$(nproc)" O=out ARCH=arm64 LLVM=-22 kernel/module/version.o 2>&1 | tee probe-evidence/probe-build.log
           cp rom-kernel/out/kernel/module/.version.o.cmd probe-evidence/version.o.cmd.txt
           python3 compatibility/check_probe.py
-      - name: Compile only the failing translation unit for diagnosis
+      - name: Build both drivers with normal FORTIFY and Werror
         shell: bash
         run: |
           set -euo pipefail
           make -C rom-kernel -j"$(nproc)" O=out ARCH=arm64 LLVM=-22 modules_prepare 2>&1 | tee probe-evidence/headers-prepare.log
-          git init external/rtl8812au
-          git -C external/rtl8812au remote add origin https://github.com/aircrack-ng/rtl8812au.git
-          git -C external/rtl8812au fetch --depth=1 origin 734485506a30d6237c2deaad666a19f8ca5379f2
-          git -C external/rtl8812au checkout --detach FETCH_HEAD
-          python3 scripts/prepare-driver.py external/rtl8812au
-          make -C rom-kernel -j"$(nproc)" O=out ARCH=arm64 LLVM=-22 M="$GITHUB_WORKSPACE/external/rtl8812au" CONFIG_88XXAU=m CONFIG_RTL8188EU=m CONFIG_PLATFORM_I386_PC=n USER_EXTRA_CFLAGS="-DCONFIG_LITTLE_ENDIAN -DCONFIG_IOCTL_CFG80211 -DRTW_USE_CFG80211_STA_EVENT" KCFLAGS="-Wno-error=attribute-warning" core/rtw_recv.o 2>&1 | tee probe-evidence/diagnostic-compile.log
-          python3 compatibility/trace_fortify.py 2>&1 | tee probe-evidence/ir-trace-build.log
-          rm -f probe-evidence/rtw_recv.ll
-      - name: Retain diagnostic logs only
+          cp inherited-evidence/Module.symvers rom-kernel/out/Module.symvers
+          cp inherited-evidence/Module.symvers probe-evidence/Module.symvers
+          bash compatibility/build_rom_drivers.sh
+      - name: Retain strict driver validation evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rtl8812au-fortify-diagnostic-logs
+          name: rom-strict-driver-validation-evidence
           path: |
             probe-evidence/*.log
             probe-evidence/*.txt
             probe-evidence/*.json
             probe-evidence/*.config
+            probe-evidence/*symvers
+            probe-evidence/*.patch
           if-no-files-found: error
+      - name: Retain individually verified diagnostic modules
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rom-strict-driver-probe-modules
+          path: verified-driver-files/
+          if-no-files-found: ignore

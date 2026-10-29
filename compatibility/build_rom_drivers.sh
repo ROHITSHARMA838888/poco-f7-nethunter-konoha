@@ -2,7 +2,7 @@
 set -euo pipefail
 export LC_ALL=C
 source drivers.lock
-mkdir -p external probe-evidence
+mkdir -p external probe-evidence verified-driver-files
 failed=0
 expected_release=$(cat rom-kernel/out/include/config/kernel.release)
 for driver in rtl8812au rtl8188eus; do
@@ -16,7 +16,7 @@ for driver in rtl8812au rtl8188eus; do
   git -C "external/$driver" fetch --depth=1 origin "$revision"
   git -C "external/$driver" checkout --detach FETCH_HEAD
   test "$(git -C "external/$driver" rev-parse HEAD)" = "$revision"
-  python3 scripts/prepare-driver.py "external/$driver"
+  python3 compatibility/prepare_rom_driver.py "external/$driver"
   git -C "external/$driver" diff --check
   git -C "external/$driver" diff > "probe-evidence/$driver-source-fixes.patch"
   if ! make -k -j"$(nproc)" -C rom-kernel O=out ARCH=arm64 LLVM=-22 \
@@ -42,6 +42,7 @@ for driver in rtl8812au rtl8188eus; do
     modinfo -F alias "$module" | grep -i "usb:v2357p${usb_id}"
     sha256sum "$module"
   } 2>&1 | tee "probe-evidence/$driver-verification.log"
+  cp "$module" verified-driver-files/
   if [ -f "external/$driver/Module.symvers" ]; then
     cp "external/$driver/Module.symvers" "probe-evidence/$driver-Module.symvers"
   fi
