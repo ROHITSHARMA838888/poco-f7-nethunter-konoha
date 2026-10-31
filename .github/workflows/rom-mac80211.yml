@@ -1,0 +1,117 @@
+name: Build matching mac80211 module for Atheros runtime
+on:
+  push:
+    branches: [codex/rom-symbol-baseline]
+    paths:
+      - .github/workflows/rom-mac80211.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: rom-mac80211
+  cancel-in-progress: true
+jobs:
+  baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      ROM_PROBE_TOOLCHAIN_SCOPE: Official apt LLVM 22 root/adapter candidate, not exact ROM Android Clang r596125
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download already-built root candidate metadata
+        uses: actions/download-artifact@v4
+        with:
+          name: rom-root-adapter-symbol-evidence
+          run-id: 40863319425
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: inherited-evidence
+      - name: Install official LLVM 22 and matching BTF tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates curl gnupg build-essential flex bison libssl-dev libelf-dev bc dwarves python3
+          curl -fsSLo /tmp/llvm-signing-key.asc https://apt.llvm.org/llvm-snapshot.gpg.key
+          fingerprint=$(gpg --show-keys --with-colons /tmp/llvm-signing-key.asc | awk -F: '$1 == "fpr" {print $10; exit}')
+          test "$fingerprint" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+          gpg --dearmor < /tmp/llvm-signing-key.asc | sudo tee /usr/share/keyrings/llvm22.gpg > /dev/null
+          echo 'deb [signed-by=/usr/share/keyrings/llvm22.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main' | sudo tee /etc/apt/sources.list.d/llvm22.list
+          sudo apt-get update
+          sudo apt-get install -y clang-22 lld-22 llvm-22 kmod rsync
+      - name: Fetch exact ROM kernel source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init rom-kernel
+          git -C rom-kernel remote add origin https://github.com/xiaomi-onyx-playground/android_kernel_xiaomi_sm8735.git
+          git -C rom-kernel fetch --depth=1 origin 7750565ada3d57e195798519b005d2b038e888c1
+          git -C rom-kernel checkout --detach FETCH_HEAD
+          test "$(git -C rom-kernel rev-parse HEAD)" = 7750565ada3d57e195798519b005d2b038e888c1
+      - name: Integrate pinned KernelSU Next
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init rom-kernel/.root_modules/KernelSU-Next
+          git -C rom-kernel/.root_modules/KernelSU-Next remote add origin https://github.com/KernelSU-Next/KernelSU-Next.git
+          git -C rom-kernel/.root_modules/KernelSU-Next fetch origin b427a3f9c2421a443f961007bfce66b25486643f
+          git -C rom-kernel/.root_modules/KernelSU-Next checkout --detach FETCH_HEAD
+          test "$(git -C rom-kernel/.root_modules/KernelSU-Next rev-parse HEAD)" = b427a3f9c2421a443f961007bfce66b25486643f
+          ln -s ../.root_modules/KernelSU-Next/kernel rom-kernel/drivers/kernelsu
+          python3 compatibility/wire_rom_root.py
+          git -C rom-kernel diff --check
+          git -C rom-kernel diff --exit-code -- kernel/module/
+      - name: Prepare exact running configuration and symbol dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p rom-kernel/out mac-evidence
+          cp inherited-evidence/resolved.config rom-kernel/out/.config
+          cp rom-kernel/out/.config mac-evidence/resolved.config
+          clang-22 --version | tee mac-evidence/compiler.txt
+          make -C rom-kernel -j"$(nproc)" O=out ARCH=arm64 LLVM=-22 modules_prepare 2>&1 | tee mac-evidence/prepare.log
+          cmp rom-kernel/out/.config mac-evidence/resolved.config
+          test "$(cat rom-kernel/out/include/config/kernel.release)" = 6.6.142-4k-g7750565ada3d-dirty
+          grep -qx CONFIG_MAC80211=m rom-kernel/out/.config
+          grep -qx CONFIG_MAC80211_LEDS=y rom-kernel/out/.config
+          # This external-module build provides mac80211 itself. Exclude only
+          # that provider's existing rows to avoid duplicate-export diagnostics.
+          awk '$3 != "net/mac80211/mac80211"' inherited-evidence/Module.symvers > rom-kernel/out/Module.symvers
+          cp inherited-evidence/Module.symvers mac-evidence/original-Module.symvers
+      - name: Build only original unmodified mac80211 sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C rom-kernel -j"$(nproc)" O=out ARCH=arm64 LLVM=-22 M="$GITHUB_WORKSPACE/rom-kernel/net/mac80211" modules 2>&1 | tee mac-evidence/build.log
+          git -C rom-kernel diff --exit-code -- net/mac80211 kernel/module
+          file=rom-kernel/net/mac80211/mac80211.ko
+          test -s "$file"
+          test "$(modinfo -F name "$file")" = mac80211
+          test "$(modinfo -F vermagic "$file" | cut -d' ' -f1)" = 6.6.142-4k-g7750565ada3d-dirty
+          for symbol in __ieee80211_get_radio_led_name __ieee80211_create_tpt_led_trigger; do
+            expected=$(awk -v s="$symbol" '$2 == s {print $1}' inherited-evidence/Module.symvers)
+            actual=$(awk -v s="$symbol" '$2 == s {print $1}' rom-kernel/net/mac80211/Module.symvers)
+            test -n "$expected"
+            test "$actual" = "$expected"
+          done
+          mkdir mac-files
+          cp "$file" mac-files/
+          cp rom-kernel/net/mac80211/Module.symvers mac-evidence/mac80211-Module.symvers
+          modinfo "$file" > mac-evidence/modinfo.txt
+          llvm-readelf-22 -h "$file" > mac-evidence/elf-header.txt
+          (cd mac-files && sha256sum mac80211.ko > SHA256SUMS)
+          printf '%s\n' 'Matching companion mac80211 for already-built ath9k_htc. Not an installer; validate imported CRCs and loaded-module use count before runtime replacement. No ROM partition writes authorized by this artifact.' > mac-files/README.txt
+      - name: Retain companion binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: onyx-matching-mac80211
+          path: mac-files/
+          if-no-files-found: error
+      - name: Retain build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: onyx-mac80211-evidence
+          path: mac-evidence/
+          if-no-files-found: error
+
