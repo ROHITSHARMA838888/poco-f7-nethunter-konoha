@@ -1,0 +1,185 @@
+name: Build Rohit Sharma NetHunter kernel identity
+on:
+  push:
+    branches: [codex/rom-symbol-baseline]
+    paths:
+      - .github/workflows/rom-branded-kernel.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: rom-branded-kernel
+  cancel-in-progress: true
+jobs:
+  baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      KBUILD_BUILD_USER: Rohit-Sharma
+      KBUILD_BUILD_HOST: Built-for-NetHunter-Rebuilt-from-Onyx
+      KBUILD_BUILD_VERSION: "1"
+      ROM_PROBE_TOOLCHAIN_SCOPE: Official apt LLVM 22 root/adapter candidate, not exact ROM Android Clang r596125
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install official LLVM 22 and matching BTF tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates curl gnupg build-essential flex bison libssl-dev libelf-dev bc dwarves python3
+          curl -fsSLo /tmp/llvm-signing-key.asc https://apt.llvm.org/llvm-snapshot.gpg.key
+          fingerprint=$(gpg --show-keys --with-colons /tmp/llvm-signing-key.asc | awk -F: '$1 == "fpr" {print $10; exit}')
+          test "$fingerprint" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+          gpg --dearmor < /tmp/llvm-signing-key.asc | sudo tee /usr/share/keyrings/llvm22.gpg > /dev/null
+          echo 'deb [signed-by=/usr/share/keyrings/llvm22.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main' | sudo tee /etc/apt/sources.list.d/llvm22.list
+          sudo apt-get update
+          sudo apt-get install -y clang-22 lld-22 llvm-22 kmod rsync
+      - name: Fetch exact ROM kernel source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init rom-kernel
+          git -C rom-kernel remote add origin https://github.com/xiaomi-onyx-playground/android_kernel_xiaomi_sm8735.git
+          git -C rom-kernel fetch --depth=1 origin 7750565ada3d57e195798519b005d2b038e888c1
+          git -C rom-kernel checkout --detach FETCH_HEAD
+          test "$(git -C rom-kernel rev-parse HEAD)" = 7750565ada3d57e195798519b005d2b038e888c1
+      - name: Integrate pinned KernelSU Next
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init rom-kernel/.root_modules/KernelSU-Next
+          git -C rom-kernel/.root_modules/KernelSU-Next remote add origin https://github.com/KernelSU-Next/KernelSU-Next.git
+          git -C rom-kernel/.root_modules/KernelSU-Next fetch origin b427a3f9c2421a443f961007bfce66b25486643f
+          git -C rom-kernel/.root_modules/KernelSU-Next checkout --detach FETCH_HEAD
+          test "$(git -C rom-kernel/.root_modules/KernelSU-Next rev-parse HEAD)" = b427a3f9c2421a443f961007bfce66b25486643f
+          ln -s ../.root_modules/KernelSU-Next/kernel rom-kernel/drivers/kernelsu
+          python3 compatibility/wire_rom_root.py
+          git -C rom-kernel diff --check
+          git -C rom-kernel diff --exit-code -- kernel/module/
+      - name: Preserve ROM config and verify ABI witness
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p rom-kernel/out probe-evidence
+          gzip -dc compatibility/rom.config.gz > rom-kernel/out/.config
+          cp rom-kernel/out/.config probe-evidence/rom-original.config
+          clang-22 --version > probe-evidence/compiler.txt
+          pahole --version > probe-evidence/pahole.txt
+          git -C rom-kernel rev-parse HEAD > probe-evidence/source-commit.txt
+          rom-kernel/scripts/config --file rom-kernel/out/.config -e KSU -e WLAN_VENDOR_ATH -m ATH9K_HTC -d RTL8XXXU
+          make -C rom-kernel O=out ARCH=arm64 LLVM=-22 olddefconfig 2>&1 | tee probe-evidence/configure.log
+          cp rom-kernel/out/.config probe-evidence/resolved.config
+          python3 rom-kernel/scripts/diffconfig probe-evidence/rom-original.config probe-evidence/resolved.config > probe-evidence/config-diff.txt
+          for symbol in DEBUG_INFO_BTF DEBUG_INFO_BTF_MODULES KASAN_HW_TAGS ARM64_4K_PAGES MODULES MODVERSIONS CC_HAS_COUNTED_BY KSU USB_CONFIGFS_F_HID HEADERS_INSTALL; do
+            grep -qx "CONFIG_${symbol}=y" rom-kernel/out/.config || { echo "Required ROM ABI setting lost: $symbol"; exit 1; }
+          done
+          for symbol in CFG80211 MAC80211 ATH9K_HTC; do
+            grep -qx "CONFIG_${symbol}=m" rom-kernel/out/.config || { echo "Required modular Wi-Fi setting lost: $symbol"; exit 1; }
+          done
+          if grep -Eq '^CONFIG_RTL8XXXU=[ym]$' rom-kernel/out/.config; then
+            echo 'RTL8XXXU would conflict with external 8188eu'; exit 1
+          fi
+          git -C rom-kernel diff > probe-evidence/root-integration.patch
+          git -C rom-kernel/.root_modules/KernelSU-Next rev-parse HEAD > probe-evidence/ksu-source-commit.txt
+          make -C rom-kernel -j"$(nproc)" O=out ARCH=arm64 LLVM=-22 kernel/module/version.o 2>&1 | tee probe-evidence/probe-build.log
+          cp rom-kernel/out/kernel/module/.version.o.cmd probe-evidence/version.o.cmd.txt
+          python3 compatibility/check_probe.py
+      - name: Compile root candidate and complete symbol table
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C rom-kernel -j"$(nproc)" O=out ARCH=arm64 LLVM=-22 Image modules 2>&1 | tee probe-evidence/baseline-build.log
+          test -s rom-kernel/out/Module.symvers
+          cp rom-kernel/out/Module.symvers probe-evidence/
+          test -s rom-kernel/out/arch/arm64/boot/Image
+          test -s rom-kernel/out/drivers/kernelsu/preinit/runner.elf
+          test -s rom-kernel/out/drivers/net/wireless/ath/ath9k/ath9k_htc.ko
+          {
+            cat rom-kernel/out/include/config/kernel.release
+            llvm-nm-22 rom-kernel/out/vmlinux | awk '$3 == "kernelsu_init" {print; found=1} END {if (!found) exit 1}'
+            modinfo rom-kernel/out/drivers/net/wireless/ath/ath9k/ath9k_htc.ko
+            sha256sum rom-kernel/out/arch/arm64/boot/Image
+          } 2>&1 | tee probe-evidence/root-image-verification.log
+      - name: Verify embedded author and NetHunter identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(cat rom-kernel/out/include/config/kernel.release)" = 6.6.142-4k-g7750565ada3d-dirty
+          grep -Fx '#define LINUX_COMPILE_BY "Rohit-Sharma"' rom-kernel/out/include/generated/compile.h
+          grep -Fx '#define LINUX_COMPILE_HOST "Built-for-NetHunter-Rebuilt-from-Onyx"' rom-kernel/out/include/generated/compile.h
+          llvm-strings-22 rom-kernel/out/vmlinux | grep -F 'Rohit-Sharma@Built-for-NetHunter-Rebuilt-from-Onyx' > probe-evidence/embedded-kernel-identity.txt
+          cp rom-kernel/out/include/generated/compile.h probe-evidence/compile.h.txt
+          printf '%s\n' 'Downstream build: Rohit Sharma; built for NetHunter.' \
+            'Rebuilt from xiaomi-onyx-playground/android_kernel_xiaomi_sm8735' \
+            'Source pin: 7750565ada3d57e195798519b005d2b038e888c1' \
+            'Original upstream authorship and licences retained.' \
+            'Identity-only change: source/config/release and ABI guards unchanged.' \
+            > probe-evidence/BUILD-CREDITS.txt
+      - name: Preserve successfully built kernel and Atheros modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir kernel-test-files
+          for file in \
+            rom-kernel/out/arch/arm64/boot/Image \
+            rom-kernel/out/drivers/net/wireless/ath/ath.ko \
+            rom-kernel/out/drivers/net/wireless/ath/ath9k/ath9k_hw.ko \
+            rom-kernel/out/drivers/net/wireless/ath/ath9k/ath9k_common.ko \
+            rom-kernel/out/drivers/net/wireless/ath/ath9k/ath9k_htc.ko; do
+            test -s "$file"
+            cp "$file" kernel-test-files/
+          done
+          (cd kernel-test-files && sha256sum Image *.ko > SHA256SUMS)
+          printf '%s\n' 'COMPILED KERNEL AND ATHEROS MODULES: NOT A FLASHABLE INSTALLER' \
+            'External Realtek drivers are separate. Phone boot/root/HID/Wi-Fi remain untested.' > kernel-test-files/README.txt
+      - name: Upload kernel before external driver compilation
+        uses: actions/upload-artifact@v4
+        with:
+          name: onyx-root-kernel-files-NOT-FLASHABLE
+          path: kernel-test-files/
+          if-no-files-found: error
+      - name: Compile pinned external Realtek drivers
+        shell: bash
+        run: bash compatibility/build_rom_drivers.sh
+      - name: Retain individually verified external drivers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: onyx-individually-verified-driver-files
+          path: verified-driver-files/
+          if-no-files-found: ignore
+      - name: Retain baseline ABI evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rom-root-adapter-symbol-evidence
+          path: probe-evidence/
+          if-no-files-found: error
+      - name: Stage compiled candidate test files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir candidate-test-files
+          for file in \
+            rom-kernel/out/arch/arm64/boot/Image \
+            external/rtl8812au/88XXau.ko \
+            external/rtl8188eus/8188eu.ko \
+            rom-kernel/out/drivers/net/wireless/ath/ath.ko \
+            rom-kernel/out/drivers/net/wireless/ath/ath9k/ath9k_hw.ko \
+            rom-kernel/out/drivers/net/wireless/ath/ath9k/ath9k_common.ko \
+            rom-kernel/out/drivers/net/wireless/ath/ath9k/ath9k_htc.ko; do
+            test -s "$file"
+            cp "$file" candidate-test-files/
+          done
+          (cd candidate-test-files && sha256sum Image *.ko > SHA256SUMS)
+          printf '%s\n' 'EXPERIMENTAL BUILD FILES, NOT A FLASHABLE INSTALLER' \
+            'KernelSU Next included; boot, root, HID and adapters require device testing.' \
+            'Static ROM CRC comparison must pass before any device test package.' \
+            'WN722N hardware revision is unconfirmed; ath9k_htc also needs separate firmware.' \
+            > candidate-test-files/README.txt
+      - name: Publish compiled experimental test files
+        uses: actions/upload-artifact@v4
+        with:
+          name: onyx-rom-root-adapter-test-files-NOT-FLASHABLE
+          path: candidate-test-files/
+          if-no-files-found: error
