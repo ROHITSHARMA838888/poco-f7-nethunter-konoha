@@ -1,0 +1,122 @@
+name: Build Archer diagnostic driver with runtime logging
+on:
+  push:
+    branches: [codex/rom-symbol-baseline]
+    paths:
+      - .github/workflows/rom-archer-diagnostic.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: rom-archer-diagnostic
+  cancel-in-progress: true
+jobs:
+  baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      ROM_PROBE_TOOLCHAIN_SCOPE: Official apt LLVM 22 root/adapter candidate, not exact ROM Android Clang r596125
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download already-built root candidate metadata
+        uses: actions/download-artifact@v4
+        with:
+          name: rom-root-adapter-symbol-evidence
+          run-id: 40863319425
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: inherited-evidence
+      - name: Install official LLVM 22 and matching BTF tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates curl gnupg build-essential flex bison libssl-dev libelf-dev bc dwarves python3
+          curl -fsSLo /tmp/llvm-signing-key.asc https://apt.llvm.org/llvm-snapshot.gpg.key
+          fingerprint=$(gpg --show-keys --with-colons /tmp/llvm-signing-key.asc | awk -F: '$1 == "fpr" {print $10; exit}')
+          test "$fingerprint" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+          gpg --dearmor < /tmp/llvm-signing-key.asc | sudo tee /usr/share/keyrings/llvm22.gpg > /dev/null
+          echo 'deb [signed-by=/usr/share/keyrings/llvm22.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main' | sudo tee /etc/apt/sources.list.d/llvm22.list
+          sudo apt-get update
+          sudo apt-get install -y clang-22 lld-22 llvm-22 kmod rsync
+      - name: Fetch exact ROM kernel source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init rom-kernel
+          git -C rom-kernel remote add origin https://github.com/xiaomi-onyx-playground/android_kernel_xiaomi_sm8735.git
+          git -C rom-kernel fetch --depth=1 origin 7750565ada3d57e195798519b005d2b038e888c1
+          git -C rom-kernel checkout --detach FETCH_HEAD
+          test "$(git -C rom-kernel rev-parse HEAD)" = 7750565ada3d57e195798519b005d2b038e888c1
+      - name: Integrate pinned KernelSU Next
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init rom-kernel/.root_modules/KernelSU-Next
+          git -C rom-kernel/.root_modules/KernelSU-Next remote add origin https://github.com/KernelSU-Next/KernelSU-Next.git
+          git -C rom-kernel/.root_modules/KernelSU-Next fetch origin b427a3f9c2421a443f961007bfce66b25486643f
+          git -C rom-kernel/.root_modules/KernelSU-Next checkout --detach FETCH_HEAD
+          test "$(git -C rom-kernel/.root_modules/KernelSU-Next rev-parse HEAD)" = b427a3f9c2421a443f961007bfce66b25486643f
+          ln -s ../.root_modules/KernelSU-Next/kernel rom-kernel/drivers/kernelsu
+          python3 compatibility/wire_rom_root.py
+          git -C rom-kernel diff --check
+          git -C rom-kernel diff --exit-code -- kernel/module/
+      - name: Prepare exact running headers and dependency CRC table
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p rom-kernel/out archer-evidence
+          cp inherited-evidence/resolved.config rom-kernel/out/.config
+          cp rom-kernel/out/.config archer-evidence/resolved.config
+          clang-22 --version | tee archer-evidence/compiler.txt
+          make -C rom-kernel -j"$(nproc)" O=out ARCH=arm64 LLVM=-22 modules_prepare 2>&1 | tee archer-evidence/prepare.log
+          cmp rom-kernel/out/.config archer-evidence/resolved.config
+          test "$(cat rom-kernel/out/include/config/kernel.release)" = 6.6.142-4k-g7750565ada3d-dirty
+          cp inherited-evidence/Module.symvers rom-kernel/out/Module.symvers
+          cp inherited-evidence/Module.symvers archer-evidence/Module.symvers
+      - name: Build only pinned Archer driver with logging enabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          source drivers.lock
+          mkdir external
+          git init external/rtl8812au
+          git -C external/rtl8812au remote add origin "$RTL8812AU_REPOSITORY"
+          git -C external/rtl8812au fetch --depth=1 origin "$RTL8812AU_COMMIT"
+          git -C external/rtl8812au checkout --detach FETCH_HEAD
+          test "$(git -C external/rtl8812au rev-parse HEAD)" = "$RTL8812AU_COMMIT"
+          python3 compatibility/prepare_rom_driver.py external/rtl8812au
+          git -C external/rtl8812au diff --check
+          git -C external/rtl8812au diff > archer-evidence/source-fixes.patch
+          build=(make -j"$(nproc)" -C rom-kernel O=out ARCH=arm64 LLVM=-22
+            M="$GITHUB_WORKSPACE/external/rtl8812au"
+            CONFIG_88XXAU=m CONFIG_PLATFORM_I386_PC=n CONFIG_RTW_DEBUG=y
+            USER_EXTRA_CFLAGS="-DCONFIG_LITTLE_ENDIAN -DCONFIG_IOCTL_CFG80211 -DRTW_USE_CFG80211_STA_EVENT")
+          "${build[@]}" core/rtw_recv.o 2>&1 | tee archer-evidence/recv-preflight.log
+          "${build[@]}" modules 2>&1 | tee archer-evidence/build.log
+          file=external/rtl8812au/88XXau.ko
+          test "$(modinfo -F name "$file")" = 88XXau
+          test "$(modinfo -F vermagic "$file" | cut -d' ' -f1)" = 6.6.142-4k-g7750565ada3d-dirty
+          modinfo -F parm "$file" | grep '^rtw_drv_log_level:'
+          modinfo -F alias "$file" | grep -i 'usb:v2357p0120'
+          modinfo "$file" > archer-evidence/modinfo.txt
+          llvm-readelf-22 -h "$file" | tee archer-evidence/elf-header.txt
+          grep -q 'Machine:.*AArch64' archer-evidence/elf-header.txt
+          mkdir archer-files
+          cp "$file" archer-files/
+          (cd archer-files && sha256sum 88XXau.ko > SHA256SUMS)
+          printf '%s\n' 'Diagnostic logging driver only. No kernel Image rebuild. Must verify import CRCs before runtime use. Existing driver and persistent loader must remain recoverable.' > archer-files/README.txt
+      - name: Retain diagnostic driver
+        uses: actions/upload-artifact@v4
+        with:
+          name: onyx-archer-diagnostic-driver
+          path: archer-files/
+          if-no-files-found: error
+      - name: Retain diagnostic build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: onyx-archer-diagnostic-evidence
+          path: archer-evidence/
+          if-no-files-found: error
+
