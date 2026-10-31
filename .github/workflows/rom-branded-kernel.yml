@@ -1,4 +1,4 @@
-name: Build Rohit Sharma NetHunter kernel identity
+name: Build Rohit Sharma NetHunter kernel v0.1.0
 on:
   push:
     branches: [codex/rom-symbol-baseline]
