@@ -168,8 +168,9 @@ static bool usb_event(const char *buf, size_t len) {
 }
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
-    if (argc != 2 || strcmp(argv[1], "--test")) {
-        puts("Usage: usb-auth-guard --test (45s maximum after first protected adapter; 2h idle limit)");
+    bool persistent = argc == 2 && !strcmp(argv[1], "--run");
+    if (argc != 2 || (!persistent && strcmp(argv[1], "--test"))) {
+        puts("Usage: usb-auth-guard --test (45s active/2h idle) or --run (until stopped; restore on unplug/exit)");
         return argc == 2 && !strcmp(argv[1], "--help") ? 0 : 2;
     }
     if (geteuid()) return 1;
@@ -185,15 +186,16 @@ int main(int argc, char **argv) {
     struct sockaddr_nl address = {.nl_family = AF_NETLINK, .nl_pid = (unsigned)getpid(), .nl_groups = 1};
     if (bind(netfd, (struct sockaddr *)&address, sizeof(address))) { perror("uevent bind"); return 1; }
     double began = now(), active = 0;
-    printf("GUARD_TEST_READY pid=%ld\n", (long)getpid());
+    printf("GUARD_%s_READY pid=%ld\n", persistent ? "SERVICE" : "TEST", (long)getpid());
     unsigned count = rescan();
-    while (alive && now() - began < 7200) {
+    while (alive && (persistent || now() - began < 7200)) {
         if (count && !active) active = now();
-        if (active && now() - active >= 45) break;
+        if (!persistent && active && now() - active >= 45) break;
         struct pollfd p = {.fd = netfd, .events = POLLIN};
         int ready = poll(&p, 1, 500);
         if (ready < 0) { if (errno == EINTR) continue; break; }
         if (!ready) continue;
+        if (p.revents & (POLLERR | POLLHUP | POLLNVAL)) break;
         char buf[16384]; struct sockaddr_nl from; socklen_t fromlen = sizeof(from);
         ssize_t n = recvfrom(netfd, buf, sizeof(buf), MSG_DONTWAIT, (struct sockaddr *)&from, &fromlen);
         if (n > 0 && fromlen >= sizeof(from) && !from.nl_pid && usb_event(buf, (size_t)n))
@@ -201,7 +203,7 @@ int main(int argc, char **argv) {
     }
     for (int i = 0; i < MAX_HUBS; i++) release(&guards[i]);
     close(netfd); close(lockfd);
-    puts("GUARD_TEST_STOPPED: original inode permissions restored");
+    puts("GUARD_STOPPED: original inode permissions restored");
     return 0;
 }
 

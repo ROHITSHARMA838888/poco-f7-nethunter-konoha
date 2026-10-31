@@ -5,6 +5,7 @@ on:
     paths:
       - .github/workflows/usb-auth-guard.yml
       - compatibility/usb_auth_guard.c
+      - compatibility/usb_auth_guard_restore_test.c
   workflow_dispatch:
 permissions:
   contents: read
@@ -20,6 +21,8 @@ jobs:
           set -euo pipefail
           mkdir guard-files guard-evidence
           cc -std=c11 -O2 -Wall -Wextra -Werror -fsyntax-only compatibility/usb_auth_guard.c
+          cc -std=c11 -O2 -Wall -Wextra -Werror -o /tmp/onyx-guard-restore-test compatibility/usb_auth_guard_restore_test.c
+          /tmp/onyx-guard-restore-test | tee guard-evidence/restore-tests.txt
           ndk="${ANDROID_NDK_LATEST_HOME:-}"
           if [ ! -x "$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang" ]; then
             ndk=$(find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n1)
