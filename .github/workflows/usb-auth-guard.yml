@@ -1,0 +1,46 @@
+name: Build small Android USB authorization guard test
+on:
+  push:
+    branches: [codex/rom-symbol-baseline]
+    paths:
+      - .github/workflows/usb-auth-guard.yml
+      - compatibility/usb_auth_guard.c
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile C helper with preinstalled official Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir guard-files guard-evidence
+          cc -std=c11 -O2 -Wall -Wextra -Werror -fsyntax-only compatibility/usb_auth_guard.c
+          ndk="${ANDROID_NDK_LATEST_HOME:-}"
+          if [ ! -x "$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang" ]; then
+            ndk=$(find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n1)
+          fi
+          tool="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          "$tool/aarch64-linux-android28-clang" --version | tee guard-evidence/compiler.txt
+          "$tool/aarch64-linux-android28-clang" -std=c11 -O2 -Wall -Wextra -Werror -fPIE -pie -Wl,-z,relro,-z,now -o guard-files/usb-auth-guard compatibility/usb_auth_guard.c
+          "$tool/llvm-readelf" -h -d guard-files/usb-auth-guard > guard-evidence/elf.txt
+          grep -q 'Machine:.*AArch64' guard-evidence/elf.txt
+          "$tool/llvm-strip" --strip-debug guard-files/usb-auth-guard
+          (cd guard-files && sha256sum usb-auth-guard > SHA256SUMS)
+          printf '%s\n' 'Test-only, exact known USB IDs. No USB authorization value or ROM writes; temporary inode write-permission restriction with independent crash restoration. Requires root. Not installed on boot.' > guard-files/README.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: onyx-usb-auth-guard-test
+          path: guard-files/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: onyx-usb-auth-guard-evidence
+          path: guard-evidence/
+          if-no-files-found: ignore
+
