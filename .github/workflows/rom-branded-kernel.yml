@@ -105,10 +105,10 @@ jobs:
         run: |
           set -euo pipefail
           test "$(cat rom-kernel/out/include/config/kernel.release)" = 6.6.142-4k-g7750565ada3d-dirty
-          grep -Fx '#define LINUX_COMPILE_BY "Rohit-Sharma"' rom-kernel/out/include/generated/compile.h
-          grep -Fx '#define LINUX_COMPILE_HOST "Built-for-NetHunter-Rebuilt-from-Onyx"' rom-kernel/out/include/generated/compile.h
-          llvm-strings-22 rom-kernel/out/vmlinux | grep -F 'Rohit-Sharma@Built-for-NetHunter-Rebuilt-from-Onyx' > probe-evidence/embedded-kernel-identity.txt
           cp rom-kernel/out/include/generated/compile.h probe-evidence/compile.h.txt
+          grep -Ex '#define[[:blank:]]+LINUX_COMPILE_BY[[:blank:]]+"Rohit-Sharma"[[:blank:]]*' rom-kernel/out/include/generated/compile.h
+          grep -Ex '#define[[:blank:]]+LINUX_COMPILE_HOST[[:blank:]]+"Built-for-NetHunter-Rebuilt-from-Onyx"[[:blank:]]*' rom-kernel/out/include/generated/compile.h
+          llvm-strings-22 rom-kernel/out/vmlinux | grep -F 'Rohit-Sharma@Built-for-NetHunter-Rebuilt-from-Onyx' > probe-evidence/embedded-kernel-identity.txt
           printf '%s\n' 'Downstream build: Rohit Sharma; built for NetHunter.' \
             'Rebuilt from xiaomi-onyx-playground/android_kernel_xiaomi_sm8735' \
             'Source pin: 7750565ada3d57e195798519b005d2b038e888c1' \
